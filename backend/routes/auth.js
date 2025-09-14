@@ -1,3 +1,4 @@
+// routes/auth.js
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const rateLimit = require("express-rate-limit");
@@ -8,15 +9,12 @@ const { sendOTP } = require("../services/twilioService");
 
 const router = express.Router();
 
-// ✅ Default values agar .env missing ho
-const OTP_WINDOW = process.env.OTP_RATE_LIMIT_WINDOW
-  ? parseInt(process.env.OTP_RATE_LIMIT_WINDOW, 10) * 1000
-  : 60 * 1000; // 1 min
-const OTP_MAX = process.env.OTP_RATE_LIMIT_MAX
-  ? parseInt(process.env.OTP_RATE_LIMIT_MAX, 10)
-  : 3;
+// ---------------------
+// OTP Rate Limiting
+// ---------------------
+const OTP_WINDOW = parseInt(process.env.OTP_RATE_LIMIT_WINDOW || 60, 10) * 1000; // default 1 min
+const OTP_MAX = parseInt(process.env.OTP_RATE_LIMIT_MAX || 3, 10);
 
-// 🔹 OTP rate limiting
 const otpLimiter = rateLimit({
   windowMs: OTP_WINDOW,
   max: OTP_MAX,
@@ -27,7 +25,9 @@ const otpLimiter = rateLimit({
   keyGenerator: (req) => req.body.mobile_number || req.ip,
 });
 
-// 🔹 Generate OTP
+// ---------------------
+// Generate OTP
+// ---------------------
 router.post(
   "/generateOTP",
   otpLimiter,
@@ -37,43 +37,45 @@ router.post(
       .withMessage("Please enter a valid mobile number"),
   ],
   async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          message: "Validation failed",
-          errors: errors.array(),
-        });
-      }
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed",
+        errors: errors.array(),
+      });
+    }
 
+    try {
       const { mobile_number } = req.body;
 
       // Generate 6-digit OTP
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-      // Delete any existing OTPs for this number
+      // Delete existing OTPs
       await OTP.deleteMany({ mobile_number });
 
       // Save new OTP
       const otpDoc = new OTP({
         mobile_number,
         otp,
-        expires_at: new Date(Date.now() + 5 * 60 * 1000), // 5 minutes
+        expires_at: new Date(Date.now() + 5 * 60 * 1000), // 5 min
+        attempts: 0,
+        verified: false,
       });
       await otpDoc.save();
 
-      // Send OTP via Twilio or return in response (dev mode)
       let otpSent = false;
       let responseOTP = null;
 
+      // Send via Twilio if configured
       if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
         try {
           await sendOTP(mobile_number, otp);
           otpSent = true;
         } catch (error) {
           console.error("Twilio error:", error.message);
-          responseOTP = otp; // fallback for dev
+          responseOTP = otp; // fallback dev mode
         }
       } else {
         responseOTP = otp; // dev mode
@@ -81,10 +83,8 @@ router.post(
 
       res.json({
         success: true,
-        message: otpSent
-          ? "OTP sent successfully"
-          : "OTP generated (dev mode)",
-        otp: responseOTP, // Only in dev mode
+        message: otpSent ? "OTP sent successfully" : "OTP generated (dev mode)",
+        otp: responseOTP, // only in dev mode
         expires_in: 300, // seconds
       });
     } catch (error) {
@@ -97,7 +97,9 @@ router.post(
   }
 );
 
-// 🔹 Validate OTP
+// ---------------------
+// Validate OTP
+// ---------------------
 router.post(
   "/validateOTP",
   [
@@ -109,19 +111,18 @@ router.post(
       .withMessage("OTP must be 6 digits"),
   ],
   async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          message: "Validation failed",
-          errors: errors.array(),
-        });
-      }
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed",
+        errors: errors.array(),
+      });
+    }
 
+    try {
       const { mobile_number, otp } = req.body;
 
-      // Find OTP record
       const otpDoc = await OTP.findOne({
         mobile_number,
         verified: false,
@@ -164,7 +165,7 @@ router.post(
       if (!user) {
         user = new User({
           mobile_number,
-          name: `User ${mobile_number.slice(-4)}`, // Default name
+          name: `User ${mobile_number.slice(-4)}`,
           role: "user",
         });
         await user.save();
@@ -181,7 +182,7 @@ router.post(
           mobile_number: user.mobile_number,
           role: user.role,
         },
-        process.env.JWT_SECRET || "fallback_secret", // ✅ fix: ensure secret exists
+        process.env.JWT_SECRET || "fallback_secret",
         { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
       );
 
